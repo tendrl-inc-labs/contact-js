@@ -599,6 +599,7 @@ class TendrlClient {
         this._senderStopped = false;
 
         const tick = async () => {
+          try {
             // Check connection state periodically (every 30 seconds)
             const currentTime = Date.now();
             if (currentTime >= (this._lastConnectionCheck + 30000)) {
@@ -653,10 +654,20 @@ class TendrlClient {
                 }
             }
 
+          } catch (error) {
+            // A pass that throws must not end the loop. setInterval kept firing
+            // regardless of what its callback did; a self-re-arming setTimeout
+            // only gets another turn if the re-arm below is reached, so one bad
+            // pass would otherwise stop the client sending anything ever again.
+            if (this.debug) {
+                console.error(`Sender pass failed: ${error}`);
+            }
+          } finally {
             // Re-arm from the current queue load, not from the load at start().
             if (!this._senderStopped) {
                 this.senderTimer = setTimeout(tick, this.calculateBatchInterval());
             }
+          }
         };
 
         this.senderTimer = setTimeout(tick, this.calculateBatchInterval());
