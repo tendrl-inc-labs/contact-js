@@ -1,7 +1,7 @@
 // examples/components/APIDemo.js
 
 import React, { useState, useEffect } from "react";
-import useTendrlClient from "../../src/hooks/useTendrlClient";
+import useTendrlClient from "@tendrl/contact/hooks";
 
 const APIDemo = () => {
     const [messages, setMessages] = useState([]);

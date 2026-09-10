@@ -41,7 +41,8 @@ class TendrlClient {
         this.maxBatchSize = maxBatchSize;
         this.minBatchInterval = minBatchInterval;
         this.maxBatchInterval = maxBatchInterval;
-        this.senderInterval = null;
+        this.senderTimer = null;
+        this._senderStopped = true;
         this.messageCheckInterval = null;
         this.checkMsgRate = checkMsgRate;
         this.checkMsgLimit = checkMsgLimit;
@@ -158,19 +159,21 @@ class TendrlClient {
             console.log("📤 Sending heartbeat:", heartbeatMessage);
         }
 
-        // Always send immediately and wait for response (matching Python SDK behavior)
+        // Always sent immediately, waiting for the response. There is no periodic
+        // heartbeat loop in this SDK; the caller decides the cadence.
         // Backend will validate required fields and return appropriate errors
         return await this._publishMessage(heartbeatMessage);
     }
 
     // Publish a message
     publish(msg, tags = [], entity = "", waitResponse = false) {
-        // Accept both string and object (matching Python SDK behavior)
+        // Accept both string and object
         if (msg === null || msg === undefined) {
             throw new Error("Message cannot be null or undefined");
         }
 
-        // If msg is a string, wrap it in an object (matching Python SDK's make_message behavior)
+        // If msg is a string, wrap it in an object. NOTE: this diverges from the
+        // Python SDK, which sends a string through as data unwrapped.
         let data = msg;
         if (typeof msg === "string") {
             data = { data: msg };
@@ -384,7 +387,10 @@ class TendrlClient {
         }
     }
 
-    // Transform CheckMessage format to Message format (matching Python SDK)
+    // Transform the server's CheckMessage format to the Message format the
+    // callback receives: top-level tags move under context, and missing fields are
+    // defaulted. The Python SDK has no equivalent step — it hands the raw server
+    // dict to its callback — so do not treat this shape as cross-SDK.
     transformCheckMessage(checkMsg) {
         const message = {
             msg_type: checkMsg.msg_type || "command",
@@ -579,13 +585,20 @@ class TendrlClient {
 
     // ==================== Batch Processing ====================
 
-    // Start the sender routine
+    // Start the sender routine.
+    //
+    // The sender re-arms itself with setTimeout after every pass instead of
+    // running on a fixed setInterval. A setInterval's period is fixed when the
+    // timer is created, and the queue is empty at start(), so the old code was
+    // pinned to minBatchInterval for the life of the client no matter how loaded
+    // the queue got. Re-arming means calculateBatchInterval() sees the queue as it
+    // actually is. It also stops passes from overlapping: the next one is only
+    // scheduled once the current pass (including its awaits) has finished.
     startSender() {
-        if (this.senderInterval) {
-            clearInterval(this.senderInterval);
-        }
+        this.stopSender();
+        this._senderStopped = false;
 
-        this.senderInterval = setInterval(async () => {
+        const tick = async () => {
             // Check connection state periodically (every 30 seconds)
             const currentTime = Date.now();
             if (currentTime >= (this._lastConnectionCheck + 30000)) {
@@ -639,7 +652,14 @@ class TendrlClient {
                     }
                 }
             }
-        }, this.calculateBatchInterval());
+
+            // Re-arm from the current queue load, not from the load at start().
+            if (!this._senderStopped) {
+                this.senderTimer = setTimeout(tick, this.calculateBatchInterval());
+            }
+        };
+
+        this.senderTimer = setTimeout(tick, this.calculateBatchInterval());
     }
 
     // Store a batch of messages offline
@@ -671,19 +691,27 @@ class TendrlClient {
 
     // Stop the sender routine
     stopSender() {
-        if (this.senderInterval) {
-            clearInterval(this.senderInterval);
-            this.senderInterval = null;
+        this._senderStopped = true;
+        if (this.senderTimer) {
+            clearTimeout(this.senderTimer);
+            this.senderTimer = null;
         }
     }
 
-    // Get a batch of messages to send
+    // Get a batch of messages to send.
+    //
+    // Every queued message up to maxBatchSize goes out. minBatchSize is NOT a
+    // floor here: holding messages back until ten of them exist would stall a
+    // low-traffic client indefinitely. The option is accepted for configuration
+    // parity with the other SDKs but does not affect this calculation — see the
+    // README's Configuration Options table.
     getBatch() {
         const batchSize = Math.min(this.queue.length, this.maxBatchSize);
         return this.queue.splice(0, batchSize);
     }
 
-    // Calculate dynamic batch interval based on queue load
+    // Calculate the delay before the next sender pass, from current queue load.
+    // Called once per pass by startSender(), so the interval tracks the queue.
     calculateBatchInterval() {
         const queueLoad = (this.queue.length / this.maxQueueSize) * 100;
 

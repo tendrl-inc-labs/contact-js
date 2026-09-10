@@ -1,11 +1,11 @@
 # Tendrl JavaScript SDK
 
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/tendrl-inc/clients/tendrl_js_sdk)
-[![Node.js Version](https://img.shields.io/badge/node.js-16+-339933.svg)](https://nodejs.org/)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/tendrl-inc-labs/contact-js)
+[![Node.js Version](https://img.shields.io/badge/node.js-18+-339933.svg)](https://nodejs.org/)
 [![React Version](https://img.shields.io/badge/react-18+-61DAFB.svg)](https://reactjs.org/)
-[![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT%20%2B%20Commons%20Clause-blue.svg)](LICENSE)
 
-A modern JavaScript/React SDK for messaging with dynamic batching, automatic message checking, and offline storage.
+A modern JavaScript/React SDK for messaging with an adaptive send interval, automatic message checking, and offline storage.
 
 ## ⚠️ License Notice
 
@@ -28,11 +28,10 @@ For licensing questions, contact: `support@tendrl.com`
 
 ## Features
 
-- **Dynamic Batching**: Queue-aware batch processing (10-100 messages)
+- **Adaptive Send Interval**: The sender re-arms after every pass with an interval recomputed from current queue load (`minBatchInterval` → `maxBatchInterval`); each pass sends up to `maxBatchSize` messages
 - **Message Queuing**: In-memory queue with configurable size limits
 - **React Integration**: Custom hooks for seamless React integration
-- **Performance Monitoring**: Built-in queue load and batch optimization
-- **Error Handling**: Robust error handling and connection management
+- **Error Handling**: Failures are contained rather than thrown at the call site — see [Error Handling](#error-handling) for what surfaces and what does not
 - **Automatic Message Checking**: Background polling for incoming messages (matches Python SDK)
 - **Message Transformation**: Automatic format conversion for consistency
 - **Connection State Management**: Built-in connection state tracking
@@ -80,7 +79,9 @@ import useTendrlClient from '@tendrl/contact/hooks';
 ### Using Source Code Directly
 
 ```javascript
-import TendrlClient from './path/to/src/utils/TendrlClient';
+// The .js extension is required: the package is an ES module, and Node does not
+// guess extensions for relative specifiers.
+import TendrlClient from './path/to/src/utils/TendrlClient.js';
 
 // Initialize client
 const client = new TendrlClient({
@@ -110,7 +111,7 @@ client.checkMessages(5);
 
 ```jsx
 import React from 'react';
-import useTendrlClient from './hooks/useTendrlClient';
+import useTendrlClient from '@tendrl/contact/hooks';
 
 function MyComponent() {
     const { client, isConnected, publish } = useTendrlClient({
@@ -142,21 +143,29 @@ function MyComponent() {
 
 ```javascript
 const client = new TendrlClient({
-    apiBaseUrl: 'https://app.tendrl.com/api', // API base URL (default: https://app.tendrl.com/api)
+    // API base URL. Resolved as: this option > TENDRL_APP_URL > production.
+    // A bare origin gets /api appended. See Environment Variables below.
+    apiBaseUrl: 'https://app.tendrl.com/api',
     apiKey: 'your_api_key',                   // Authentication key (required)
     debug: false,                             // Enable debug logging
-    minBatchSize: 10,                         // Minimum messages per batch
-    maxBatchSize: 100,                        // Maximum messages per batch
-    minBatchInterval: 100,                    // Minimum batch interval (ms)
-    maxBatchInterval: 1000,                   // Maximum batch interval (ms)
+    minBatchSize: 10,                         // Accepted and stored, but never read — see note below
+    maxBatchSize: 100,                        // Maximum messages sent per pass
+    minBatchInterval: 100,                    // Sender interval when the queue is below 25% full (ms)
+    maxBatchInterval: 1000,                   // Sender interval when the queue is above 75% full (ms)
     maxQueueSize: 1000,                       // Maximum queue size
     callback: (message) => console.log(message), // Message callback function
     checkMsgRate: 3000,                       // Automatic message check frequency (ms, default: 3000)
     checkMsgLimit: 1,                        // Maximum messages per check (default: 1)
-    offlineStorage: false,                   // Enable offline storage (IndexedDB)
+    offlineStorage: false,                   // Enable offline storage (IndexedDB — browser only)
     dbName: 'tendrl_offline',                // IndexedDB database name
 });
 ```
+
+**On `minBatchSize`**: the option is accepted and stored for configuration parity
+with the other Tendrl SDKs, but this client never reads it. Each sender pass takes
+everything queued up to `maxBatchSize`. It is deliberately not a floor: holding
+messages back until ten of them existed would stall a low-traffic client
+indefinitely. Setting it has no effect on when or how much is sent.
 
 ## API Reference
 
@@ -164,17 +173,26 @@ const client = new TendrlClient({
 
 #### `publish(message, tags, entity, waitResponse)`
 
-Publishes a message to the server. Accepts both string and object messages (matching Python SDK behavior).
+Publishes a message to the server. Accepts both string and object messages.
 
 **Parameters:**
 
 - `message` (string | object): Message data. If a string is provided, it will be wrapped in `{data: message}` automatically.
 - `tags` (string[]): Optional array of tags for categorization.
 - `entity` (string): Optional destination entity ID.
-- `waitResponse` (boolean): If true, waits for response before returning (synchronous).
+- `waitResponse` (boolean): If `true`, the message is sent immediately and `publish()` returns a `Promise` that resolves with the server response (or `null` if the request failed or timed out after 5s). Nothing is synchronous — the promise must be awaited. If `false` (the default), the message is queued for the next sender pass and `publish()` returns `undefined`.
+
+**Cross-SDK caveats** — two places where this SDK and the Python SDK send
+different bytes for the same call:
+
+- When `entity` and `waitResponse` are both set, this SDK sends `context.wait: true`
+  next to `dest`; the Python SDK drops `wait` whenever an entity is given. So
+  `publish(msg, tags, entity, true)` does not produce the same message in both.
+- A string message becomes `data: {data: "..."}` here, while Python sends
+  `data: "..."` unwrapped. Objects behave identically in both.
 
 ```javascript
-// Publish an object (async, queued)
+// Publish an object (queued, returns undefined)
 client.publish({
     sensor: 'temperature',
     value: 23.5
@@ -183,8 +201,8 @@ client.publish({
 // Publish a string (automatically wrapped in {data: "..."})
 client.publish('Simple text message', ['logs']);
 
-// Synchronous publishing (immediate, waits for response)
-client.publish({
+// Wait for the response (sent immediately; must be awaited)
+const response = await client.publish({
     alert: 'high_temperature',
     value: 45.0
 }, ['alerts'], 'sensor-001', true);
@@ -192,10 +210,14 @@ client.publish({
 
 #### `checkMessages(limit)`
 
-Requests messages from the server. If automatic message checking is enabled, this is called automatically at the configured interval.
+Requests messages from the server and delivers them to the callback set with
+`setMessageCallback()` (or the `callback` constructor option). It is `async` and
+resolves with `undefined` — it does not return the messages, and it resolves
+whether or not any arrived. If automatic message checking is enabled, this is
+called for you at the configured interval.
 
 ```javascript
-client.checkMessages(10); // Get up to 10 messages (uses default limit if null)
+await client.checkMessages(10); // Fetch up to 10 messages (uses checkMsgLimit if null)
 ```
 
 #### `setMessageCallback(callback)`
@@ -235,7 +257,12 @@ const isConnected = await client.checkConnectionState();
 
 #### `start()`
 
-Starts the client. No async connection needed - this is synchronous.
+Starts the sender loop, and the automatic message checking if a callback is set.
+There is no connection to establish, so `start()` returns immediately — but it is
+not purely local: it fires a `PUT /entities/status` to mark the entity online
+without awaiting it, and that request's failure is swallowed (logged only under
+`debug: true`). `start()` returning is therefore not evidence that the server was
+reached or that the API key is valid.
 
 ```javascript
 client.start();
@@ -251,7 +278,14 @@ client.stop();
 
 #### `isConnected` (property)
 
-Returns the current connection state (read-only property).
+Read-only. True only while the client is **both** running and last known to be
+reachable — it is the last connection result AND `start()`-ed state. Two
+consequences worth knowing:
+
+- After `stop()` it is `false` on a perfectly healthy network. It is not a network
+  probe; use `await client.checkConnectionState()` for that.
+- Before the first request it is optimistic: a freshly started client reports
+  connected until something actually fails.
 
 ```javascript
 if (client.isConnected) {
@@ -261,7 +295,9 @@ if (client.isConnected) {
 
 #### `sendHeartbeat({ mem_free, mem_total, disk_free, disk_size })`
 
-Sends a heartbeat message with system resource information. Always sends immediately and waits for response (matching Python SDK behavior).
+Sends a heartbeat message with system resource information. Always sends
+immediately and waits for the response. There is no automatic heartbeat loop in
+this SDK — call it yourself on whatever schedule you want.
 
 **Parameters:**
 
@@ -299,7 +335,7 @@ await client.sendHeartbeat({
 // Set up callback to handle incoming messages
 function messageHandler(message) {
     // Process incoming message
-    // Message format matches Python SDK: {msg_type, data, context: {tags}, source, timestamp, dest, request_id}
+    // Message shape: {msg_type, data, context: {tags}, source, timestamp, dest, request_id}
     console.log(`Received: ${message.msg_type} from ${message.source}`);
     
     // Access message data
@@ -326,28 +362,32 @@ client.checkMessages(5);
 
 ### IncomingMessage Structure
 
-| Field | Type | Description | Required |
-|-------|------|-------------|----------|
-| `msg_type` | `string` | Message type identifier (e.g., "command", "notification", "alert") | ✅ Yes |
-| `source` | `string` | Sender's resource path (set by server) | ✅ Yes |
-| `dest` | `string` | Destination entity identifier | ❌ Optional |
-| `timestamp` | `string` | RFC3339 timestamp (set by server) | ✅ Yes |
-| `data` | `any` | The actual message payload (can be any JSON type) | ✅ Yes |
-| `context` | `object` | Message metadata | ❌ Optional |
-| `request_id` | `string` | Request identifier (if message was a request) | ❌ Optional |
+The client reshapes each message before handing it to your callback, filling in
+defaults for anything the server left out. So "always present" below means the
+field exists on every message you receive — **not** that the server sent it. In
+particular, a defaulted `source` is the empty string, not an error.
+
+| Field | Type | Description | Always present |
+|-------|------|-------------|----------------|
+| `msg_type` | `string` | Message type identifier (e.g., "command", "notification", "alert"). Defaults to `"command"` client-side | ✅ Yes |
+| `source` | `string` | Sender's resource path (set by server). Defaults to `""` client-side, so a callback can receive an empty source | ✅ Yes |
+| `dest` | `string` | Destination entity identifier | ❌ Only when the server sends one |
+| `timestamp` | `string` | RFC3339 timestamp (set by server). Defaults client-side to the time the message was received | ✅ Yes |
+| `data` | `any` | The actual message payload (can be any JSON type). Defaults to `{}` | ✅ Yes |
+| `context` | `object` | Message metadata | ❌ Only when the server sends tags |
+| `request_id` | `string` | Request identifier (if message was a request) | ❌ Only when the server sends one |
 
 ### Message Context Structure
 
-| Field | Type | Description | Required |
-|-------|------|-------------|----------|
-| `tags` | `string[]` | Message tags for categorization | ❌ Optional |
-| `dynamicActions` | `object` | Server-side validation results | ❌ Optional |
+| Field | Type | Description | Always present |
+|-------|------|-------------|----------------|
+| `tags` | `string[]` | Message tags for categorization | ❌ Only when the server sends tags |
 
 ### Message Checking How It Works
 
 1. **Automatic Background Checking**: When a callback is set, the SDK automatically checks for messages every 3 seconds (configurable via `checkMsgRate`)
 2. **Manual Checking**: You can call `checkMessages()` manually anytime
-3. **Message Transformation**: Incoming messages are automatically transformed from CheckMessage format to Message format (matching Python SDK)
+3. **Message Transformation**: Incoming messages are automatically transformed from the server's CheckMessage format to the Message format above (top-level `tags` are moved under `context`, and missing fields are defaulted)
 4. **Callback Execution**: Your callback function is called for each incoming message
 5. **Error Handling**: Failed callbacks don't stop other message processing
 6. **Connectivity Aware**: Automatically handles network failures and updates connectivity state
@@ -369,16 +409,43 @@ const {
     setMessageCheckLimit, // Set message check limit
     sendHeartbeat,       // Send heartbeat function
 } = useTendrlClient({
-    onMessage: (message) => {
-        // Handle incoming messages
+    onMessage: (message) => {   // Message callback (the hook's name for `callback`)
         console.log('Received:', message);
     },
-    debug: false,
-    checkMsgRate: 3000,  // Check every 3 seconds
-    checkMsgLimit: 1,    // Get 1 message per check
-    // ... other config options
+    debug: false,               // Enable debug logging
+    minBatchSize: 10,           // Accepted, not used — see Configuration Options
+    maxBatchSize: 100,          // Maximum messages sent per pass
+    minBatchInterval: 100,      // Sender interval at low queue load (ms)
+    maxBatchInterval: 1000,     // Sender interval at high queue load (ms)
+    maxQueueSize: 1000,         // Maximum queue size
+    checkMsgRate: 3000,         // Check every 3 seconds
+    checkMsgLimit: 1,           // Get 1 message per check
+    apiBaseUrl: undefined,      // Passed through; omit to use TENDRL_APP_URL / production
+    offlineStorage: false,      // Enable offline storage (IndexedDB — browser only)
+    dbName: 'tendrl_offline',   // IndexedDB database name
 });
 ```
+
+That is the complete list — the hook accepts no other options.
+
+Two of the constructor's options are **not** among them:
+
+- **`apiKey`**: there is no way to pass one. The hook reads
+  `process.env.REACT_APP_TENDRL_KEY` and nothing else. If that variable is unset,
+  the hook logs an error and `client` stays `null`; every returned function then
+  logs "TendrlClient is not initialized." and does nothing.
+- **`callback`**: use `onMessage`, which the hook forwards as the client's
+  `callback`.
+
+`publish` returns whatever the client returns, so `publish(msg, tags, entity, true)`
+hands back the promise to await. `checkMessages` likewise returns the promise;
+messages themselves arrive through `onMessage`.
+
+`isConnected` is read during render from the client the effect built, so it is
+`false` on the first render and it does not re-render the component when the
+connection state later changes — the hook holds no React state. Poll
+`client.isConnected` on your own timer if you need it to update on screen, as
+`examples/components/APIDemo.js` does.
 
 ## Message Format
 
@@ -409,6 +476,9 @@ try {
 }
 
 // Message publishing error handling
+const messageData = { sensor: 'temperature', value: 23.5 };
+const tags = ['sensors'];
+
 try {
     client.publish(messageData, tags);
 } catch (error) {
@@ -422,13 +492,31 @@ if (!isConnected) {
 }
 ```
 
+What those `catch` blocks can and cannot see:
+
+- `publish()` throws only for a message that is `null`, `undefined`, or neither
+  string nor object. A **delivery** failure never reaches the call site: a queued
+  message that cannot be sent is stored offline or dropped, and the error is logged
+  only under `debug: true`. Pass `waitResponse: true` and await the result — `null`
+  means the send failed — if you need to know.
+- `start()` does not throw for an unreachable server or a bad API key either; see
+  [`start()`](#start).
+
 ## Performance Features
 
-### Dynamic Batching
+### Adaptive Send Interval
 
-- Automatically adjusts batch size based on queue load
-- Optimizes sending intervals based on queue performance
-- Prevents queue overflow with configurable limits
+The sender re-arms itself after each pass with a delay recomputed from the queue
+as it is at that moment:
+
+- Below 25% of `maxQueueSize`: `minBatchInterval`
+- Above 75%: `maxBatchInterval`
+- In between: interpolated linearly between the two
+
+What is *not* adaptive: the batch size. Every pass sends whatever is queued, up to
+`maxBatchSize` — there is no load-based batch sizing and `minBatchSize` is not
+consulted. Overflow is bounded by `maxQueueSize`; past that, messages are stored
+offline if offline storage is enabled and discarded if it is not.
 
 ### Memory Management
 
@@ -442,11 +530,17 @@ The SDK supports offline message storage using IndexedDB (browser's native datab
 
 ### Enabling Offline Storage
 
+> **⚠️ Browser only.** IndexedDB does not exist in Node.js. Under Node,
+> `offlineStorage: true` fails at construction — the storage `init()` rejects with
+> `indexedDB is not defined`, the client swallows that rejection (it is only
+> visible with `debug: true`), and every subsequent "stored" message is lost with
+> no error at the call site. Leave `offlineStorage: false` outside the browser.
+
 ```javascript
 const client = new TendrlClient({
     apiBaseUrl: 'https://app.tendrl.com/api',
     apiKey: 'your_api_key',
-    offlineStorage: true,  // Enable offline storage
+    offlineStorage: true,  // Enable offline storage (browser only)
     dbName: 'tendrl_offline',  // Optional: custom database name
 });
 ```
@@ -463,16 +557,16 @@ const client = new TendrlClient({
    - Tags are preserved from original messages
    - Messages are deleted after successful sending
 
-3. **TTL Expiration**: Messages expire after 1 hour (3600 seconds) by default
+3. **TTL Expiration**: Messages expire 1 hour (3600 seconds) after they are stored
    - Expired messages are automatically cleaned up
-   - Cleanup runs every minute
+   - Cleanup runs at most once a minute, on a sender pass
 
 ### Offline Storage Features
 
 - **Automatic Storage**: Messages stored when offline or queue full
 - **Automatic Processing**: Messages sent when connection restored
 - **Tag Preservation**: Tags are stored and restored with messages
-- **TTL Expiration**: Messages expire after configurable time
+- **TTL Expiration**: Messages expire after 1 hour. This is not configurable — the client passes 3600 seconds at both store sites and exposes no option for it
 - **Batch Processing**: Large backlogs processed in manageable batches
 - **Error Handling**: Failed batches don't affect successfully sent messages
 
@@ -506,32 +600,72 @@ The SDK code is located in the `src/` directory:
 
 ### Examples
 
-Example applications are located in the `examples/` directory. See `examples/README.md` for details on running the examples.
-
-To run the examples:
+`examples/` holds a Create React App demo. It consumes the SDK exactly the way
+your own app would: `examples/package.json` depends on `@tendrl/contact` by its
+GitHub spec, and `examples/components/APIDemo.js` imports
+`@tendrl/contact/hooks`. Nothing reaches outside the project root, so no symlink
+is needed.
 
 ```bash
 cd examples
-npm install
+npm install                                    # React, react-scripts, and the SDK
+echo "REACT_APP_TENDRL_KEY=your_api_key" > .env
 npm start
 ```
+
+See `examples/README.md` for details.
 
 ## Environment Variables
 
 ```bash
-REACT_APP_TENDRL_KEY=your_api_key
+REACT_APP_TENDRL_KEY=your_api_key      # API key — the only source the React hook reads
+TENDRL_APP_URL=http://localhost:8000   # Optional: where the client points
 ```
 
-**Note**: The API base URL is set statically in the code with production default (`https://app.tendrl.com/api`). You only need to set `REACT_APP_TENDRL_KEY`. Override the URL via `apiBaseUrl` parameter only if you're using a different environment.
+**`REACT_APP_TENDRL_KEY`** is the only way to give the React hook an API key; the
+hook accepts no `apiKey` option. Outside React, pass `apiKey` to the constructor —
+nothing reads this variable there.
 
-## Browser Compatibility
+**`TENDRL_APP_URL`** overrides the API base URL. It is read from `process.env`
+when a client is constructed, and the resolution order is:
 
-- Chrome 88+
-- Firefox 84+
-- Safari 14+
-- Edge 88+
+1. the `apiBaseUrl` option, if given
+2. `TENDRL_APP_URL`
+3. `https://app.tendrl.com/api`
+
+A bare origin gets `/api` appended (`http://localhost:8000` →
+`http://localhost:8000/api`), a value already ending in `/api` is left alone, and
+trailing slashes are trimmed. The Python SDK applies the same rule to the same
+variable, so one value configures both. Where `process.env` does not exist at all,
+the lookup is skipped and the production default applies.
+
+One caveat for bundled apps: Create React App only exposes variables prefixed
+`REACT_APP_` to the bundle, so `TENDRL_APP_URL` will not reach a client running in
+a CRA build. Pass `apiBaseUrl` to the hook there instead.
+
+## Runtime Requirements
+
+Rather than quote browser version numbers this repository does not test, here is
+what the code actually needs:
+
+- **`fetch`** — every request goes through it. In Node this means **Node 18 or
+  newer** (`package.json` sets `engines.node >= 18`); there is no polyfill and no
+  `node-fetch` dependency.
+- **`AbortController`** — used for every request timeout.
+- **ES modules and `async`/`await`** — the package is `"type": "module"` and ships
+  untranspiled source. Bundle it yourself if you need to support older targets.
+- **`indexedDB`** — only when `offlineStorage: true`. Browsers only; see
+  [Offline Storage](#offline-storage).
+
+CI runs the test suite on Node 20 and 22.
 
 ## License
 
-Copyright (c) 2025 tendrl, inc.
-All rights reserved. Unauthorized copying, distribution, modification, or usage of this code, via any medium, is strictly prohibited without express permission from the author.
+Copyright (c) Tendrl, Inc. 2025-2026.
+
+Licensed under the MIT License with Commons Clause and Client Use Restriction —
+see [LICENSE](LICENSE) for the terms that govern. You are granted the right to
+use, copy, modify, merge, publish, distribute, sublicense and sell copies of the
+software, subject to the restrictions summarized at the top of this README:
+no commercial or hosted product built on it, and no use against any backend other
+than Tendrl's.

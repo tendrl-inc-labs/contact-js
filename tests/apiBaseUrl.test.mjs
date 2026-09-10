@@ -3,7 +3,7 @@
 // The SDK used to hardcode https://app.tendrl.com/api with no env var, so it
 // could not be pointed at a local stack without passing apiBaseUrl at every call
 // site — and the quick-start never mentioned that option. These lock in the
-// escape hatch and the normalisation rule shared with the Go, Python and
+// escape hatch and the normalization rule shared with the Go, Python and
 // nano-agent clients, so one TENDRL_APP_URL works for all of them.
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';

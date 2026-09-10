@@ -25,40 +25,32 @@ The examples directory contains a React application demonstrating the Tendrl SDK
 
 ## Running the Examples
 
-### Option 1: Copy to Your Project (Recommended)
+The example depends on the SDK as a package, the same way your own app would:
+`package.json` here lists `@tendrl/contact` by its GitHub spec and `APIDemo.js`
+imports `@tendrl/contact/hooks`. No symlink, and nothing imported from outside
+this directory — `react-scripts` rejects imports that reach above the project
+root, which is what the old `../../src/` import did.
 
-The easiest way to use these examples is to copy them into your own React project:
-
-1. Copy the example files to your project's `src/` directory
-2. Install the SDK as a package (or copy the SDK files)
-3. Update imports to use the installed package
-
-### Option 2: Run from Examples Directory
-
-To run the examples directly from this directory:
-
-1. Install dependencies:
+1. Install dependencies (React, `react-scripts`, and the SDK from GitHub):
 
    ```bash
    cd examples
    npm install
    ```
 
-2. Create a symlink or copy the SDK files:
-
-   ```bash
-   # From the examples directory, create a symlink to src
-   ln -s ../src src
-   ```
-
-3. Set up environment variables (create a `.env` file in the examples directory):
+2. Set up environment variables (create a `.env` file in the examples directory):
 
    ```bash
    REACT_APP_TENDRL_KEY=your_api_key
-   # API URL is set statically in code, no need to configure
    ```
 
-4. Run the example:
+   The API key is the only required variable. The client defaults to
+   `https://app.tendrl.com/api`; to point the demo somewhere else, pass
+   `apiBaseUrl` to `useTendrlClient` in `components/APIDemo.js`. Create React App
+   only exposes variables prefixed `REACT_APP_` to the bundle, so the SDK's
+   `TENDRL_APP_URL` variable does not reach a client running here.
+
+3. Run the example:
 
    ```bash
    npm start
@@ -66,8 +58,13 @@ To run the examples directly from this directory:
 
 This will start the React development server. The example application will be available at `http://localhost:3000`.
 
-**Note**: The examples import the SDK from `../../src/` (or `./src/` if using symlink). In a production application, you would install the SDK as a package and import it normally:
+### Copying into your own project
 
-```javascript
-import useTendrlClient from 'tendrl-js-sdk/hooks/useTendrlClient';
+To reuse this code, copy `App.js` and `components/APIDemo.js` into your project's
+`src/` directory and install the SDK there:
+
+```bash
+npm install github:tendrl-inc-labs/contact-js
 ```
+
+The imports need no changes — they already reference the package.

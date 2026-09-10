@@ -14,15 +14,13 @@ const useTendrlClient = ({
     maxQueueSize = 1000,
     checkMsgRate = 3000, // Message check frequency in ms (default: 3 seconds)
     checkMsgLimit = 1, // Maximum messages to retrieve per check
-    apiBaseUrl = null,
+    apiBaseUrl = undefined,
     offlineStorage = false, // Enable offline storage
     dbName = 'tendrl_offline', // IndexedDB database name
 }) => {
     const clientRef = useRef(null);
 
     useEffect(() => {
-        // Use provided apiBaseUrl or default to production API
-        const baseUrl = apiBaseUrl || 'https://app.tendrl.com/api';
         const apiKey = process.env.REACT_APP_TENDRL_KEY;
 
         if (!apiKey) {
@@ -30,9 +28,12 @@ const useTendrlClient = ({
             return;
         }
 
-        // Initialize the client
+        // apiBaseUrl is passed through untouched — including undefined. The hook
+        // used to substitute the production URL here, which shadowed the
+        // constructor's TENDRL_APP_URL lookup and left React users with no way to
+        // point the client at a local or staging stack.
         clientRef.current = new TendrlClient({
-            apiBaseUrl: baseUrl,
+            apiBaseUrl: apiBaseUrl || undefined,
             apiKey,
             debug,
             callback: onMessage,
@@ -59,19 +60,23 @@ const useTendrlClient = ({
         };
     }, [debug, onMessage, minBatchSize, maxBatchSize, minBatchInterval, maxBatchInterval, maxQueueSize, checkMsgRate, checkMsgLimit, apiBaseUrl, offlineStorage, dbName]);
 
-    // Function to publish messages
+    // Function to publish messages.
+    // Returns the client's return value so `waitResponse: true` is usable through
+    // the hook: publish(msg, tags, entity, true) hands back the promise that
+    // resolves with the server response.
     const publish = (msg, tags = [], entity = "", waitResponse = false) => {
         if (clientRef.current) {
-            clientRef.current.publish(msg, tags, entity, waitResponse);
+            return clientRef.current.publish(msg, tags, entity, waitResponse);
         } else {
             console.error("TendrlClient is not initialized.");
         }
     };
 
-    // Function to check messages
+    // Function to check messages. Returns the promise so callers can await the
+    // round trip; messages themselves arrive via the onMessage callback.
     const checkMessages = (limit = null) => {
         if (clientRef.current) {
-            clientRef.current.checkMessages(limit);
+            return clientRef.current.checkMessages(limit);
         } else {
             console.error("TendrlClient is not initialized.");
         }
