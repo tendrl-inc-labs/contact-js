@@ -640,12 +640,16 @@ class TendrlClient {
 
             // Cleanup expired messages every minute
             if (this.storage && currentTime >= (this._lastCleanup + 60000)) {
+                // Advance the clock before the attempt, not after a success. A
+                // storage backend that throws every time — IndexedDB missing under
+                // Node, say — would otherwise leave _lastCleanup at its old value
+                // and re-run the failing cleanup on every sender pass.
+                this._lastCleanup = currentTime;
                 try {
                     const deletedCount = await this.storage.cleanupExpired();
                     if (this.debug && deletedCount > 0) {
                         console.log(`🧹 Cleaned up ${deletedCount} expired offline messages`);
                     }
-                    this._lastCleanup = currentTime;
                 } catch (error) {
                     if (this.debug) {
                         console.error(`Failed to cleanup expired messages: ${error}`);
