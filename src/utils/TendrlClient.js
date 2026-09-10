@@ -7,7 +7,7 @@ const VERSION = "0.1.0";
 
 class TendrlClient {
     constructor({
-        apiBaseUrl = 'https://app.tendrl.com/api',
+        apiBaseUrl = undefined,
         apiKey,
         debug = false,
         // Batching configuration
@@ -23,7 +23,15 @@ class TendrlClient {
         offlineStorage = false, // Enable offline storage
         dbName = 'tendrl_offline', // IndexedDB database name
     }) {
-        this.apiBaseUrl = apiBaseUrl.replace(/\/$/, ''); // Remove trailing slash
+        // Explicit option > TENDRL_APP_URL (Node) > production. The env var keeps
+        // parity with the Python and Go SDKs so one value configures all three,
+        // and it is what makes the client reachable in tests and against staging.
+        const envUrl =
+            (typeof process !== 'undefined' && process.env && process.env.TENDRL_APP_URL) || '';
+        let base = apiBaseUrl || envUrl || 'https://app.tendrl.com/api';
+        base = String(base).replace(/\/+$/, '');
+        if (!base.endsWith('/api')) base += '/api';
+        this.apiBaseUrl = base;
         this.apiKey = apiKey;
         this.debug = debug;
         this.queue = [];
