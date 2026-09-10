@@ -43,8 +43,11 @@ For licensing questions, contact: `support@tendrl.com`
 ### NPM (Recommended)
 
 ```bash
-npm install tendrl
+npm install github:tendrl-inc-labs/contact-js
 ```
+
+The package is not on the npm registry yet, so install it from this repository.
+It resolves as `@tendrl/contact`, which is the name to import from.
 
 ### Manual Installation
 
@@ -67,11 +70,11 @@ You can use the client class directly without React - no dependencies required.
 ### Using NPM Package
 
 ```javascript
-import TendrlClient from 'tendrl';
-// or
-import TendrlClient from 'tendrl/utils';
+import TendrlClient from '@tendrl/contact';
+// or, the same client by its explicit subpath
+import TendrlClient from '@tendrl/contact/utils';
 // or for React hooks
-import useTendrlClient from 'tendrl/hooks';
+import useTendrlClient from '@tendrl/contact/hooks';
 ```
 
 ### Using Source Code Directly
@@ -354,9 +357,7 @@ client.checkMessages(5);
 #### `useTendrlClient`
 
 ```javascript
-import useTendrlClient from 'tendrl/hooks';
-// or
-import { useTendrlClient } from 'tendrl';
+import useTendrlClient from '@tendrl/contact/hooks';
 
 const {
     client,              // TendrlClient instance
