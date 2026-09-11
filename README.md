@@ -270,11 +270,21 @@ client.start();
 
 #### `stop()`
 
-Stops the client and updates entity status to offline.
+Stops the client, updates entity status to offline, and sends anything still
+queued. Returns a `Promise` that resolves once that flush is done.
 
 ```javascript
-client.stop();
+await client.stop();
 ```
+
+Awaiting it matters when the process is about to exit: `publish()` is
+asynchronous, so a message published moments earlier is still on the queue, and
+without the await the process may exit before it goes out. Calling
+`client.stop()` without awaiting still works and still flushes.
+
+If a batch cannot be delivered and no offline storage is available, the client
+logs a warning naming the count and the server. Offline storage requires a
+browser, so under Node that warning is the only signal you get.
 
 #### `isConnected` (property)
 

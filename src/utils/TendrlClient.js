@@ -94,21 +94,62 @@ class TendrlClient {
     }
 
     // Stop the client
+    // Returns a promise that resolves once anything still queued has been sent.
+    // Await it if you need that guarantee before the process exits; ignoring the
+    // return value keeps the old, synchronous-looking behavior.
     stop() {
         if (!this._isRunning) {
-            return;
+            return Promise.resolve();
         }
 
         this._isRunning = false;
-        
+
         // Update entity status to offline
         this._updateEntityStatus(false);
-        
+
         // Stop intervals
         this.stopSender();
         this.stopMessageChecking();
 
+        const flushed = this.flushRemaining();
+
         if (this.debug) console.log("TendrlClient stopped");
+        return flushed;
+    }
+
+    // Send whatever is left in the queue after the sender has been stopped.
+    //
+    // stopSender() only clears the timer, so everything still queued used to be
+    // abandoned: publish() had already returned, nothing raised, and nothing was
+    // logged. A message published shortly before stop() was simply gone.
+    async flushRemaining() {
+        while (this.queue.length > 0) {
+            const batch = this.getBatch();
+            if (batch.length === 0) break;
+
+            if (this._connectionState) {
+                const success = await this._publishMessages(batch);
+                if (!success) {
+                    await this._handleUndelivered(batch);
+                }
+            } else {
+                await this._handleUndelivered(batch);
+            }
+        }
+    }
+
+    // Persist an undelivered batch if storage is available, and say so either
+    // way. Silence here is what made the drop impossible to notice.
+    async _handleUndelivered(batch) {
+        if (this.storage) {
+            await this._storeBatchOffline(batch);
+            return;
+        }
+        console.warn(
+            `Tendrl: DROPPED ${batch.length} message(s) that could not be ` +
+            `delivered to ${this.apiBaseUrl}. Offline storage is unavailable ` +
+            `(it requires a browser), so they are lost.`
+        );
     }
 
     // ==================== Message Publishing ====================
@@ -623,18 +664,19 @@ class TendrlClient {
                         console.log(`Sending batch of ${batch.length} messages. Queue size: ${this.queue.length}`);
                     }
                     
-                    // Only send if we have connection
+                    // Both failure paths go through _handleUndelivered, which
+                    // stores when it can and says so when it cannot. Previously
+                    // each branch stored only `if (this.storage)` and did
+                    // nothing at all otherwise, so under Node -- where the
+                    // IndexedDB-backed store cannot exist -- a failed batch was
+                    // dequeued, unsent, unstored and unlogged.
                     if (this._connectionState) {
                         const success = await this._publishMessages(batch);
-                        if (!success && this.storage) {
-                            // If publish failed and we're offline, store messages
-                            await this._storeBatchOffline(batch);
+                        if (!success) {
+                            await this._handleUndelivered(batch);
                         }
                     } else {
-                        // Store messages offline if storage is enabled
-                        if (this.storage) {
-                            await this._storeBatchOffline(batch);
-                        }
+                        await this._handleUndelivered(batch);
                     }
                 }
             }
