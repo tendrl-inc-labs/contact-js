@@ -47,15 +47,27 @@ function watchedClient(opts = {}) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Wait for a condition rather than for the clock. A fixed sleep turns "the
+// interval re-arms" into "the runner managed N passes in 150ms", which is a
+// statement about CI load, not about the client.
+async function waitFor(predicate, { timeout = 5000, step = 10 } = {}) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+        if (predicate()) return true;
+        await sleep(step);
+    }
+    return false;
+}
+
 describe('adaptive send interval', () => {
     test('the interval is recomputed on every pass, not once at start()', async () => {
         const { client, passes } = watchedClient({ minBatchInterval: 10, maxBatchInterval: 200 });
         client.start();
-        await sleep(150);
-        client.stop();
+        const rearmed = await waitFor(() => passes.length > 1);
+        await client.stop();
 
-        assert.ok(passes.length > 1,
-            `calculateBatchInterval() ran ${passes.length} time(s) in 150ms. Once ` +
+        assert.ok(rearmed,
+            `calculateBatchInterval() ran ${passes.length} time(s) in 5s. Once ` +
             'means the interval was frozen at start() and the client can never ' +
             'adapt to queue load.');
     });
@@ -71,8 +83,10 @@ describe('adaptive send interval', () => {
         });
         client.start();
         for (let i = 0; i < 90; i++) client.publish({ marker: `load-${i}` });
-        await sleep(300);
-        client.stop();
+        // Enough passes to observe the interval widening, however loaded the
+        // runner is.
+        await waitFor(() => passes.length >= 5);
+        await client.stop();
 
         const loaded = passes.filter((p) => p.queued > 75);
         assert.ok(loaded.length > 0, 'the queue never got loaded; test is not measuring anything');
@@ -88,10 +102,10 @@ describe('adaptive send interval', () => {
     test('stop() ends the loop instead of leaving it re-arming', async () => {
         const { client, passes } = watchedClient({ minBatchInterval: 10 });
         client.start();
-        await sleep(60);
-        client.stop();
+        await waitFor(() => passes.length >= 2);
+        await client.stop();
         const atStop = passes.length;
-        await sleep(120);
+        await sleep(200);
 
         assert.ok(passes.length <= atStop + 1,
             'the sender kept re-arming after stop(); a self-rescheduling timer that ' +
@@ -107,6 +121,6 @@ describe('adaptive send interval', () => {
 
         assert.ok(await server.waitForMarker('lonely', 5000),
             'a single message never left the queue');
-        client.stop();
+        await client.stop();
     });
 });
